@@ -7,17 +7,15 @@
 #define MAX_NAME_LENGTH 256
 #define HInstance() GetModuleHandle(NULL)
 
-const double PI = 2.0 * acos(0.0);
-
-int nScreenWidth = 1024;
-int nScreenHeight = 768;
-
-float fMouseX = 0.0f;
-float fMouseY = 0.0f;
-
 #define MOUSE_LBUTTON 0
 #define MOUSE_RBUTTON 1
 #define MOUSE_WHEEL 3
+
+#define BLOCK_SIZE 1.0f
+#define PLAYER_HEIGHT 4.0f
+
+#define OUTPUT_WIDTH 50
+#define OUTPUT_HEIGHT 50
 
 struct MouseState
 {
@@ -34,19 +32,50 @@ struct KeyState
 	bool bReleased;
 };
 
+struct vf3d
+{
+	float x;
+	float y;
+	float z;
+};
+
+struct sCamera
+{
+	vf3d pos;
+	vf3d rot;
+
+	float speed;
+	float vel;
+
+	bool jumpActive;
+};
+
+sCamera vCamera = {
+	{ 5.0f, 5.0f, 20.0f }, 
+	{ 70.0f, 0.0f, -40.0f },
+	0.0f, 0.0f, false
+};
+
+const double PI = 2.0 * acos(0.0);
+
+int nScreenWidth = 1024;
+int nScreenHeight = 768;
+
+float fMouseX = 0.0f;
+float fMouseY = 0.0f;
+
 bool bShowCursor = true;
 
 MouseState mouse[5];
 KeyState keys[256];
-
-#define OUTPUT_WIDTH 10
-#define OUTPUT_HEIGHT 10
 
 float fPerlinNoise2D[OUTPUT_WIDTH * OUTPUT_HEIGHT];
 float fPerlinSeed2D[OUTPUT_WIDTH * OUTPUT_HEIGHT];
 
 float fScaleBias = 2.0f;
 float fOctaves = 12;
+
+vf3d vMap[1024 * 768];
 
 LRESULT CALLBACK WinProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -103,26 +132,6 @@ LRESULT CALLBACK WinProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 	return DefWindowProc(hWnd, msg, wParam, lParam);
 }
 
-struct vf3d
-{
-	float x;
-	float y;
-	float z;
-};
-
-struct triangle
-{
-	vf3d v[3];
-};
-
-struct sCamera
-{
-	vf3d pos;
-	vf3d rot;
-};
-
-sCamera vCamera = { { 0.0f, 0.0f, 1.7f }, { 70.0f, 0.0f, -40.0f } };
-
 void RotateCamera(HWND* hWnd)
 {
 	auto rotate = [&](float xAngle, float zAngle)
@@ -142,7 +151,7 @@ void RotateCamera(HWND* hWnd)
 	float fAngle = -vCamera.rot.z / 180.0f * PI;
 	float fSpeed = 0.0f;
 
-	if (keys[L'W'].bPressed) fSpeed = 0.1f;
+	if (keys[L'W'].bPressed) fSpeed = 0.1f + vCamera.speed;
 	if (keys[L'S'].bPressed) fSpeed = -0.1f;
 	if (keys[L'A'].bPressed) { fSpeed = 0.1f; fAngle -= PI / 2.0f; }
 	if (keys[L'D'].bPressed) { fSpeed = 0.1f; fAngle += PI / 2.0f; }
@@ -277,6 +286,11 @@ bool OnUserCreate()
 
 	bShowCursor = false;
 
+	DoPerlinNoise2D(OUTPUT_WIDTH, OUTPUT_HEIGHT, fPerlinSeed2D, fOctaves, fScaleBias, fPerlinNoise2D);
+
+	for (int i = 0; i < OUTPUT_WIDTH * OUTPUT_HEIGHT; i++)
+		fPerlinNoise2D[i] = (10.0f - fPerlinNoise2D[i] * 16.0f) * 5.0f;
+
 	return true;
 }
 
@@ -290,36 +304,44 @@ bool OnUserUpdate(HWND* hWnd)
 
 	DoPerlinNoise2D(OUTPUT_WIDTH, OUTPUT_HEIGHT, fPerlinSeed2D, fOctaves, fScaleBias, fPerlinNoise2D);
 
-	glBegin(GL_POINTS);
+	if (vCamera.vel > 0.2f)
+		vCamera.vel = 0.2f;
+	
+	if (!vCamera.jumpActive)
+		vCamera.pos.z -= vCamera.vel;
+
 	for (int x = 0; x < OUTPUT_WIDTH; x++)
 		for (int y = 0; y < OUTPUT_HEIGHT; y++)
 		{
-			float col = fPerlinNoise2D[y * OUTPUT_WIDTH + x];
+			float z = fPerlinNoise2D[y * OUTPUT_WIDTH + x];
 
-			DrawCube(x, y, col * 10);
+			if (x <= vCamera.pos.x && y <= vCamera.pos.y && vCamera.pos.x <= x + BLOCK_SIZE && vCamera.pos.y <= y + BLOCK_SIZE)
+			{
+				if (z + PLAYER_HEIGHT > vCamera.pos.z && vCamera.pos.z - PLAYER_HEIGHT / 2.0f > z && !vCamera.jumpActive)
+				{
+					vCamera.pos.z = z + PLAYER_HEIGHT;
+					vCamera.vel = 0.0f;
+				}
+
+				if (vCamera.jumpActive)
+				{
+					vCamera.vel -= 0.07f;
+
+					if (vCamera.vel < 0.0f)
+						vCamera.jumpActive = false;
+				}
+			}
+
+			DrawCube(x, y, z);
 		}
-	glEnd();
 
-	if (keys[L'T'].bPressed)
-		fScaleBias += 0.1f;
+	if (!vCamera.jumpActive)
+		vCamera.vel += 0.03f;
 
-	if (keys[L'G'].bPressed)
-		fScaleBias -= 0.1f;
-	
-	if (keys[L'Y'].bPressed) 
-		fOctaves += 0.1f;
+	if (keys[VK_SPACE].bPressed)
+		vCamera.jumpActive = true;
 
-	if (keys[L'H'].bPressed)
-		fOctaves -= 0.1f;
-
-	if (fOctaves < 1.0f)
-		fOctaves = 1.0f;
-
-	if (fOctaves > 15.0f)
-		fOctaves = 15.0f;
-
-	if (fScaleBias < 0.1f)
-		fScaleBias = 0.1f;
+	vCamera.speed = keys[VK_SHIFT].bPressed ? 0.2f : 0.0f;
 	
 	return true;
 }
